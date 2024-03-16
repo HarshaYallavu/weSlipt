@@ -4,7 +4,6 @@ const orderController = require('./../controllers/orderController');
 
 router.get('/', orderController.getAllOrdersForAGroup);
 router.post('/claim', orderController.makeAClaimForAnOrderItemBulk);
-router.get('/filter', orderController.findAnOrder);
 router.post('/', orderController.createAnOrder);
 
 module.exports = router;
