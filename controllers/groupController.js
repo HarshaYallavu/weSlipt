@@ -1,6 +1,4 @@
-const { ObjectId } = require('mongodb');
 const group = require('./../model/groupModel');
-const mongoose = require('mongoose');
 
 //Creates a new group, req may contain userids
 exports.addNewGroup = async (req, resp, next)=>{
