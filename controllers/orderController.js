@@ -23,10 +23,11 @@ exports.makeAClaimForAnOrderItemBulk = async (req, resp, next) => {
     const itemsClaimed = req.body.orderItemClaims;
     const order = orderModel.orderModel;
     try {
-        const bulkwriteQueries = await checkForClaims(claimedOrderId, claimedUserId, itemsClaimed, order);
-        // console.log(bulkwriteQueries);
-        const bulkUpdateStats = await order.bulkWrite(bulkwriteQueries);
-        console.log(bulkUpdateStats);
+        const checkedClaims = await checkForClaims(claimedOrderId, claimedUserId, itemsClaimed, order);
+        console.log(checkedClaims);
+        // const bulkUpdateStats = await order.bulkWrite(checkedClaims.bulkUpdateOps);
+        console.log(checkedClaims.rejectedClaims);
+        // console.log(bulkUpdateStats);
         resp.status(200).json({ "message": `Successfully updated claim on the Order# ${claimedOrderId}` });
     } catch (error) {
         resp.status(500).json({ "message": `Error occurred while claiming the order item:\n${error}` });
@@ -54,19 +55,48 @@ exports.createAnOrder = async (req, resp, next) => {
 //This method checks for the claims and returns the update query to bulk write
 async function checkForClaims(orderId, userId, itemsClaimed, order) {
     const bulkUpdateOps = [];
+    const rejectedClaims = [];
     try {
+        const userAlreadyClaimedTheItem = await order.aggregate([
+            { $match: { _id: new Types.ObjectId(orderId) } }, // check for a different way to handle ObjectId typecasting
+            { $unwind: { path: "$items" } },
+            // { $match: { "items.itemName": itemsClaimed[index].itemName } },
+            { $addFields: { totalPriceClaimedPerItem: { $sum: '$items.claims.claimedPriceShare' } } },
+            { $addFields: { priceYetToBeClaimed: { $subtract: ['$items.itemPrice', '$totalPriceClaimedPerItem'] } } },
+            { $unwind: { path: "$items.claims" } },
+            // { $match: { "items.claims.claimedBy": new Types.ObjectId(userId) } },
+            { $project: { items: 1, totalPriceClaimedPerItem: 1, priceYetToBeClaimed: 1 } }
+        ]).exec();
         for (const index in itemsClaimed) {
-            const userAlreadyClaimedTheItem = await order.aggregate([
-                { $match: { _id: new Types.ObjectId(orderId) } }, // check for a different way to handle ObjectId typecasting
-                { $unwind: { path: "$items" } },
-                { $match: { "items.itemName": itemsClaimed[index].itemName } },
-                { $unwind: { path: "$items.claims" } },
-                { $match: { "items.claims.claimedBy": new Types.ObjectId(userId) } },
-                { $project: { items: 1 } }]).exec();
-            console.log(userAlreadyClaimedTheItem);
-            if (userAlreadyClaimedTheItem.length == 0) {
-                console.log('user not claimed'); //make update query for claimed item
-                bulkUpdateOps.push(
+            userAlreadyClaimedTheItem.forEach(userClaim => {
+                // console.log(`${userId}, ${userClaim.items.claims.claimedBy}, ${userClaim.items.claims.claimedBy == userId}`);
+                if(userClaim.items.claims.claimedBy == userId && userClaim.items.itemName == itemsClaimed[index].itemName){
+                    if(userClaim.priceYetToBeClaimed >= itemsClaimed[index].priceShare){
+                        console.log(`${userClaim.items.claims.claimedBy}, ${userClaim.items.itemName}, ${userClaim.priceYetToBeClaimed}: User already claimed the item and the new claim is valid`);
+                        bulkUpdateOps.push(
+                                    {
+                                        updateOne: {
+                                            filter: { _id: orderId },
+                                            update: {
+                                                $set: {
+                                                    "items.$[item].claims.$[claim]": { claimedBy: new Types.ObjectId(userId), claimedQuantity: itemsClaimed[index].quantity, claimedPriceShare: itemsClaimed[index].priceShare },
+                                                }
+                                            },
+                                            arrayFilters: [{ "claim.claimedBy": new Types.ObjectId(userId) }, { "item.itemName": itemsClaimed[index].itemName }],
+                                            upsert: true
+                                        }
+                                    }
+                                );
+                    }
+                    else{
+                        console.log(`${userClaim.items.claims.claimedBy}, ${userClaim.items.itemName}, ${userClaim.priceYetToBeClaimed}: User already claimed the item and the new claim is not valid`);
+                        rejectedClaims.push({'message': 'To be claimed cannot be more than Yet to be claimed price share', 'itemName': itemsClaimed[index].itemName});
+                    }
+                }
+                else if (userClaim.items.itemName == itemsClaimed[index].itemName) {
+                    if(userClaim.priceYetToBeClaimed >= itemsClaimed[index].priceShare){
+                        console.log(`${userClaim.items.claims.claimedBy}, ${userClaim.items.itemName}, ${userClaim.priceYetToBeClaimed}: User did not claim the item and the new claim is valid`);
+                               bulkUpdateOps.push(
                     {
                         updateOne: {
                             filter: { _id: orderId, "items.itemName": itemsClaimed[index].itemName },
@@ -74,28 +104,18 @@ async function checkForClaims(orderId, userId, itemsClaimed, order) {
                             upsert: true
                         }
                     }
-                );
-            }
-            else {
-                console.log('user claimed'); //make query for claim push
-                bulkUpdateOps.push(
-                    {
-                        updateOne: {
-                            filter: { _id: orderId },
-                            update: {
-                                $set: {
-                                    "items.$[item].claims.$[claim]": { claimedBy: new Types.ObjectId(userId), claimedQuantity: itemsClaimed[index].quantity, claimedPriceShare: itemsClaimed[index].priceShare },
-                                }
-                            },
-                            arrayFilters: [{ "claim.claimedBy": new Types.ObjectId(userId) }, { "item.itemName": itemsClaimed[index].itemName }],
-                            upsert: true
-                        }
-
+                ); 
                     }
-                );
-            }
+                    else{
+                        console.log(`${userClaim.items.claims.claimedBy}, ${userClaim.items.itemName}, ${userClaim.priceYetToBeClaimed}: User did not claim the item and the new claim is not valid`);
+                        rejectedClaims.push({'message': 'To be claimed cannot be more than Yet to be claimed price share', 'itemName': itemsClaimed[index].itemName});
+                    }
+                } else {
+                    
+                }
+            });
         }
-        return bulkUpdateOps;
+        return {'bulkUpdateOps': bulkUpdateOps, 'rejectedClaims': rejectedClaims};
     } catch (error) {
         console.log(`Error while checking for claims:\n${error}`);
         return [];

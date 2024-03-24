@@ -23,7 +23,7 @@ const orderSchema = new Schema({
 });
 
 //Middleware to validate the claims
-orderSchema.pre('updateOne', function(){
+orderSchema.pre('bulkWrite', function(){
     console.log('Executing pre validation middleware on Order Schema');
 })
 
